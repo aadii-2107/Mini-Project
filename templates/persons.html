@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Registered People</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="card wide">
+      <h1>Registered People</h1>
+      <input id="searchInput" class="search" type="text" placeholder="Search by name or ID..." />
+      <div id="content" class="muted">Loading...</div>
+      <div style="margin-top:14px;display:flex;gap:16px;">
+        <a href="{{ url_for('root') }}">Back to camera page</a>
+        <a href="{{ url_for('collect_page') }}">Collect face data</a>
+        <a href="/logout" style="color:#f87171;">Logout</a>
+      </div>
+    </div>
+    <script src="{{ url_for('static', filename='persons.js') }}"></script>
+  </body>
+</html>

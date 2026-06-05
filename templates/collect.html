@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face Data Collection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="card wide">
+      <div class="hero-banner">
+        <div class="hero-chip">Smart Greet</div>
+        <h1>Welcome to Smart Greet</h1>
+        <p>Collect face data in a smooth, guided way and save each user directly into your existing recognition database.</p>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <strong>Face Data Collection</strong>
+            <div class="muted">Collect at least 10 face images for each user before saving.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <label for="personName">Person Name</label>
+        <input id="personName" type="text" placeholder="Enter full name" />
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <strong>Add Images</strong>
+            <div class="muted">Use uploads, camera capture, or both. Minimum required: 10 images.</div>
+          </div>
+          <div id="imageCounter" class="badge">0 / 10 images</div>
+        </div>
+
+        <label for="photoPicker">Choose image files</label>
+        <input id="photoPicker" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" multiple />
+
+        <div class="capture-grid">
+          <div>
+            <label>Live Camera</label>
+            <video id="captureVideo" autoplay playsinline muted></video>
+            <canvas id="captureCanvas" style="display:none;"></canvas>
+            <div class="actions">
+              <button id="startCameraBtn" type="button">Start Camera</button>
+              <button id="captureImageBtn" type="button" class="btn secondary" disabled>Capture Image</button>
+              <button id="stopCameraBtn" type="button" class="btn danger" disabled>Stop Camera</button>
+            </div>
+          </div>
+          <div>
+            <label>Collection Status</label>
+            <div id="collectionHelp" class="result">Add at least 10 clear single-face photos before submitting.</div>
+            <div class="actions">
+              <button id="clearAllBtn" type="button" class="btn secondary">Clear All</button>
+              <button id="submitEnrollmentBtn" type="button" disabled>Save to Database</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <strong>Collected Images</strong>
+          <span class="muted">Remove any blurry or duplicate images before saving.</span>
+        </div>
+        <div id="imageGallery" class="image-grid">
+          <div class="muted">No images added yet.</div>
+        </div>
+      </div>
+
+      <div id="result" class="result">No submission yet.</div>
+    </div>
+
+    <script src="{{ url_for('static', filename='collect.js') }}"></script>
+  </body>
+</html>

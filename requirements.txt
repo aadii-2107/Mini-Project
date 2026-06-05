@@ -1,0 +1,5 @@
+Flask
+numpy
+Pillow
+Click>=6.0
+setuptools==70.0.0

@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local runtime/database artifacts
+project.db
+*.db
+instance/
+
+# Face data and local uploads
+known_faces/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/

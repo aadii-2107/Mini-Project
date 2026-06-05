@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Upload Person Photo</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <style>
+      .tab-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+      .tab-btn { flex: 1; padding: 10px; border-radius: 8px; background: #1f2937; color: #94a3b8; border: 1px solid #374151; cursor: pointer; font-size: 0.97rem; }
+      .tab-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .tab-panel { display: none; }
+      .tab-panel.active { display: block; }
+      #cameraPreview { width: 100%; max-height: 280px; border-radius: 10px; background: #000; object-fit: cover; display: none; }
+      #capturedPreview { width: 100%; max-height: 280px; border-radius: 10px; object-fit: cover; display: none; margin-bottom: 10px; }
+      .cam-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      .btn-green { background: #16a34a; }
+      .btn-green:hover { background: #15803d; }
+      .btn-red { background: #dc2626; }
+      .btn-red:hover { background: #b91c1c; }
+    </style>
+  </head>
+  <body>
+    <div class="card wide">
+      <h1>Upload Training Photos</h1>
+      <p>Add a new person and upload their face photos for recognition.</p>
+      <div class="panel">
+        <label for="newPersonName">Add New Person Name</label>
+        <div class="row">
+          <input id="newPersonName" type="text" placeholder="Enter name (e.g. Viraj)" />
+          <button id="addPersonBtn" type="button">Add Person</button>
+        </div>
+      </div>
+      <div class="panel">
+        <label for="uploadPersonName">Person Name</label>
+        <input id="uploadPersonName" type="text" placeholder="Enter person name for these photos" required />
+        <div class="tab-bar" style="margin-top:14px;">
+          <button class="tab-btn active" id="tabChoose" onclick="switchTab('choose')">📁 Choose Photo</button>
+          <button class="tab-btn" id="tabCapture" onclick="switchTab('capture')">📷 Capture Photo</button>
+        </div>
+        <div id="panelChoose" class="tab-panel active">
+          <label for="photoFile">Select photo files (.jpg / .jpeg / .png)</label>
+          <input id="photoFile" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" multiple />
+          <div style="margin-top:10px;">
+            <button id="uploadChooseBtn" type="button">Upload Photos</button>
+          </div>
+        </div>
+        <div id="panelCapture" class="tab-panel">
+          <p style="margin-top:8px;" class="muted">Point the camera at the person's face, then click Capture.</p>
+          <video id="cameraPreview" autoplay playsinline></video>
+          <canvas id="snapshotCanvas" style="display:none;"></canvas>
+          <img id="capturedPreview" alt="Captured photo" />
+          <div class="cam-actions">
+            <button id="startCamBtn" type="button" onclick="startCamera()">▶ Start Camera</button>
+            <button id="captureBtn" type="button" class="btn-green" style="display:none;" onclick="capturePhoto()">📸 Capture</button>
+            <button id="retakeBtn" type="button" style="display:none;" onclick="retakePhoto()">🔄 Retake</button>
+            <button id="uploadCaptureBtn" type="button" style="display:none;" onclick="uploadCaptured()">⬆ Upload</button>
+            <button id="stopCamBtn" type="button" class="btn-red" style="display:none;" onclick="stopCamera()">■ Stop Camera</button>
+          </div>
+        </div>
+      </div>
+      <div id="result" class="result">No upload yet.</div>
+      <div style="margin-top:14px;display:flex;gap:16px;">
+        <a href="/">Back to camera page</a>
+        <a href="/collect">Collect face data</a>
+        <a href="/logout" style="color:#f87171;">Logout</a>
+      </div>
+    </div>
+    <script src="/static/upload.js"></script>
+  </body>
+</html>

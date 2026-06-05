@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Camera Preview</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="card">
+      <h1>Camera Preview</h1>
+      <p>Allow camera permission. Identification runs automatically when face appears.</p>
+      <video id="camera" autoplay playsinline muted></video>
+      <div id="status"></div>
+      <div id="result" class="result">Waiting for face...</div>
+      <div class="actions">
+        <a class="btn" href="{{ url_for('collect_page') }}">Collect Face Data</a>
+        <a class="btn secondary" href="{{ url_for('upload_page') }}">Admin Upload</a>
+        <a class="btn secondary" href="{{ url_for('persons_page') }}">View Registered People</a>
+      </div>
+    </div>
+    <script src="{{ url_for('static', filename='camera.js') }}"></script>
+  </body>
+</html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <style>
+      .login-wrap {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .login-box {
+        background: #111827;
+        border-radius: 14px;
+        padding: 32px 28px;
+        width: 100%;
+        max-width: 360px;
+        box-sizing: border-box;
+      }
+      .login-box h1 { font-size: 1.4rem; margin: 0 0 6px; }
+      .login-box p  { color: #94a3b8; margin: 0 0 22px; font-size: 0.95rem; }
+      .lock-icon { font-size: 2.4rem; margin-bottom: 12px; }
+      .error-msg {
+        background: #450a0a;
+        border: 1px solid #dc2626;
+        color: #fca5a5;
+        padding: 10px 14px;
+        border-radius: 8px;
+        margin-bottom: 14px;
+        font-size: 0.9rem;
+      }
+      .field { margin-bottom: 16px; }
+      .field label { display: block; margin-bottom: 6px; color: #cbd5e1; font-size: 0.92rem; }
+      .field input {
+        width: 100%;
+        padding: 11px 12px;
+        border-radius: 8px;
+        border: 1px solid #374151;
+        background: #1f2937;
+        color: #e2e8f0;
+        font-size: 1rem;
+        box-sizing: border-box;
+      }
+      .field input:focus { outline: none; border-color: #2563eb; }
+      .login-btn {
+        width: 100%;
+        padding: 12px;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 1rem;
+        border: none;
+        cursor: pointer;
+        margin-top: 4px;
+      }
+      .login-btn:hover { background: #1d4ed8; }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrap">
+      <div class="login-box">
+        <div class="lock-icon">🔒</div>
+        <h1>Admin Login</h1>
+        <p>Enter the password to manage faces.</p>
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+        <form method="POST" action="/login">
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" placeholder="Enter password" autofocus required />
+          </div>
+          <button class="login-btn" type="submit">Sign In</button>
+        </form>
+      </div>
+    </div>
+  </body>
+</html>
