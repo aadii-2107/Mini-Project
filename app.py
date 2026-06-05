@@ -17,8 +17,10 @@ from PIL import Image
 
 try:
     import face_recognition
-except ImportError:
+    _face_recognition_import_error: str | None = None
+except ImportError as e:
     face_recognition = None
+    _face_recognition_import_error = str(e)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SESSION_SECRET", "change-me-in-production")
@@ -142,6 +144,7 @@ def ensure_face_engine() -> tuple | None:
             {
                 "error": "face_recognition is not installed",
                 "hint": "Install dependencies from requirements.txt",
+                "details": _face_recognition_import_error,
             }
         ),
         500,
@@ -546,7 +549,10 @@ def admin_storage_info() -> tuple:
         "database_url_set": bool(DATABASE_URL),
         "known_faces_dir": str(KNOWN_FACES_DIR),
         "known_faces_exists": KNOWN_FACES_DIR.exists(),
+        "face_engine_ready": face_engine_ready(),
     }
+    if not face_engine_ready():
+        info["face_engine_error"] = _face_recognition_import_error
 
     try:
         conn = get_db_connection()
