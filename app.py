@@ -153,8 +153,21 @@ def allowed_image_filename(filename: str) -> bool:
     return suffix in ALLOWED_IMAGE_EXTENSIONS
 
 
+def resolve_person_dir(person_name: str) -> Path:
+    direct = KNOWN_FACES_DIR / person_name
+    if direct.exists():
+        return direct
+    if not KNOWN_FACES_DIR.exists():
+        return direct
+    needle = person_name.casefold()
+    for candidate in KNOWN_FACES_DIR.iterdir():
+        if candidate.is_dir() and candidate.name.casefold() == needle:
+            return candidate
+    return direct
+
+
 def count_person_photos(person_name: str) -> int:
-    person_dir = KNOWN_FACES_DIR / person_name
+    person_dir = resolve_person_dir(person_name)
     if not person_dir.exists() or not person_dir.is_dir():
         return 0
     return sum(
@@ -278,7 +291,7 @@ def validate_saved_photo(saved_path: Path) -> str | None:
 
 
 def save_person_photos(person_name: str, photo_files) -> tuple[list[str], list[dict]]:
-    person_dir = KNOWN_FACES_DIR / person_name
+    person_dir = resolve_person_dir(person_name)
     person_dir.mkdir(parents=True, exist_ok=True)
 
     saved_paths: list[str] = []
@@ -304,7 +317,7 @@ def save_person_photos(person_name: str, photo_files) -> tuple[list[str], list[d
             skipped_files.append({"file": filename, "reason": validation_error})
             continue
 
-        saved_paths.append(str(saved_path.relative_to(BASE_DIR)))
+        saved_paths.append(str(Path("known_faces") / person_dir.name / saved_name))
 
     return saved_paths, skipped_files
 
@@ -839,7 +852,7 @@ def list_person_photos(person_id: int) -> tuple:
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
-        person_dir = KNOWN_FACES_DIR / person_name
+        person_dir = resolve_person_dir(person_name)
         photos = []
         if person_dir.exists():
             for f in sorted(person_dir.iterdir()):
@@ -861,7 +874,7 @@ def delete_person_photo(person_id: int, photo_name: str) -> tuple:
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
-        photo_path = KNOWN_FACES_DIR / person_name / Path(photo_name).name
+        photo_path = resolve_person_dir(person_name) / Path(photo_name).name
         if not photo_path.exists():
             return jsonify({"error": "photo not found"}), 404
         photo_path.unlink()
@@ -881,7 +894,7 @@ def serve_person_photo(person_id: int, photo_name: str) -> tuple:
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
-        photo_path = KNOWN_FACES_DIR / person_name / Path(photo_name).name
+        photo_path = resolve_person_dir(person_name) / Path(photo_name).name
         if not photo_path.exists():
             return jsonify({"error": "photo not found"}), 404
         return send_file(photo_path)
