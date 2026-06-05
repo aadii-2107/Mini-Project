@@ -6,12 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir dlib-bin face-recognition-models \
-    && pip install --no-cache-dir --no-deps face-recognition \
-    && pip install --no-cache-dir -r requirements.txt gunicorn
-
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install -r requirements.txt
 COPY . .
 
 ENV FLASK_HOST=0.0.0.0
