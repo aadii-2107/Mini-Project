@@ -1,6 +1,7 @@
-from flask import Flask, jsonify, render_template, request, session, redirect, url_for
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_file, after_this_request
 from functools import wraps
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from collections import defaultdict
 from datetime import datetime, timezone
 import os
@@ -8,6 +9,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import uuid
+import tempfile
+import zipfile
 
 import numpy as np
 from PIL import Image
@@ -51,6 +54,7 @@ def logout():
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = Path(os.getenv("DATA_DIR", "")) if os.getenv("DATA_DIR") else BASE_DIR
+DATABASE_URL = os.getenv("DATABASE_URL")
 DB_PATH = DATA_DIR / "project.db"
 KNOWN_FACES_DIR = DATA_DIR / "known_faces"
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -68,9 +72,39 @@ _known_face_names_cache: list[str] = []
 _known_faces_signature_cache: tuple[int, int] | None = None
 
 
-def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def maybe_migrate_persistent_data() -> None:
+    if not os.getenv("DATA_DIR"):
+        return
+
+    try:
+        if DATA_DIR.resolve() == BASE_DIR.resolve():
+            return
+    except Exception:
+        return
+
+    source_db = BASE_DIR / "project.db"
+    if source_db.exists() and not DB_PATH.exists():
+        try:
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_db, DB_PATH)
+        except Exception:
+            pass
+
+    source_faces = BASE_DIR / "known_faces"
+    if source_faces.exists() and not KNOWN_FACES_DIR.exists():
+        try:
+            KNOWN_FACES_DIR.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source_faces, KNOWN_FACES_DIR)
+        except Exception:
+            pass
+
+
+maybe_migrate_persistent_data()
+
+
+def get_db_connection():
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor_factory = RealDictCursor
     return conn
 
 
@@ -128,28 +162,28 @@ def count_person_photos(person_name: str) -> int:
     )
 
 
-def get_person_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT id, name, created_at FROM persons WHERE LOWER(name) = LOWER(?)",
+def get_person_by_name(conn, name: str):
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name, created_at FROM persons WHERE LOWER(name) = LOWER(%s)",
         (name,),
-    ).fetchone()
+    )
+    return cursor.fetchone()
 
 
-def get_or_create_person(conn: sqlite3.Connection, name: str) -> tuple[sqlite3.Row, bool]:
+def get_or_create_person(conn, name: str):
     existing = get_person_by_name(conn, name)
     if existing:
         return existing, False
 
     created_at = utc_now()
-    cursor = conn.execute(
-        "INSERT INTO persons (name, created_at) VALUES (?, ?)",
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO persons (name, created_at) VALUES (%s, %s) RETURNING id, name, created_at",
         (name, created_at),
     )
+    created = cursor.fetchone()
     conn.commit()
-    created = conn.execute(
-        "SELECT id, name, created_at FROM persons WHERE id = ?",
-        (cursor.lastrowid,),
-    ).fetchone()
     return created, True
 
 
@@ -312,16 +346,20 @@ def best_person_match(known_names: list[str], distances: np.ndarray) -> tuple[st
 def init_db() -> None:
     conn = get_db_connection()
     try:
-        conn.executescript(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS persons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL
-            );
-
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS detections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 person_id INTEGER,
                 raw_name TEXT NOT NULL,
                 is_known INTEGER NOT NULL,
@@ -329,36 +367,45 @@ def init_db() -> None:
                 message TEXT NOT NULL,
                 detected_at TEXT NOT NULL,
                 FOREIGN KEY (person_id) REFERENCES persons(id)
-            );
-
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 email TEXT UNIQUE,
                 phone TEXT,
                 department TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            );
-
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS user_preferences (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL UNIQUE,
                 preferred_tone TEXT,
                 language TEXT NOT NULL DEFAULT 'en',
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS user_interactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 input_text TEXT,
                 response_text TEXT,
                 confidence REAL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id)
-            );
+            )
             """
         )
         conn.commit()
@@ -366,7 +413,7 @@ def init_db() -> None:
         conn.close()
 
 
-def person_as_dict(row: sqlite3.Row) -> dict:
+def person_as_dict(row: dict) -> dict:
     person_name = row["name"]
     return {
         "id": row["id"],
@@ -376,7 +423,7 @@ def person_as_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def detection_as_dict(row: sqlite3.Row) -> dict:
+def detection_as_dict(row: dict) -> dict:
     return {
         "id": row["id"],
         "person_id": row["person_id"],
@@ -388,7 +435,7 @@ def detection_as_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def user_as_dict(row: sqlite3.Row) -> dict:
+def user_as_dict(row: dict) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -400,7 +447,7 @@ def user_as_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def user_preference_as_dict(row: sqlite3.Row) -> dict:
+def user_preference_as_dict(row: dict) -> dict:
     return {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -410,7 +457,7 @@ def user_preference_as_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def user_interaction_as_dict(row: sqlite3.Row) -> dict:
+def user_interaction_as_dict(row: dict) -> dict:
     return {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -473,13 +520,46 @@ def persons_page() -> str:
     return render_template("persons.html")
 
 
+@app.route("/api/admin/backup", methods=["GET"])
+@login_required
+def admin_backup() -> tuple:
+    return jsonify({"error": "backup functionality moved to cloud storage"}), 501
+
+
+@app.route("/api/admin/storage-info", methods=["GET"])
+@login_required
+def admin_storage_info() -> tuple:
+    info: dict = {
+        "database_url_set": bool(DATABASE_URL),
+        "known_faces_dir": str(KNOWN_FACES_DIR),
+        "known_faces_exists": KNOWN_FACES_DIR.exists(),
+    }
+
+    try:
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) AS cnt FROM persons")
+            row = cursor.fetchone()
+            if row:
+                info["persons_count"] = int(row["cnt"])
+        finally:
+            conn.close()
+    except Exception as e:
+        info["connection_error"] = str(e)
+
+    return jsonify(info), 200
+
+
 @app.route("/api/persons", methods=["GET"])
 def list_persons() -> tuple:
     conn = get_db_connection()
     try:
-        rows = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             "SELECT id, name, created_at FROM persons ORDER BY id DESC"
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
         return jsonify([person_as_dict(row) for row in rows]), 200
     finally:
         conn.close()
@@ -501,16 +581,18 @@ def create_person() -> tuple:
             return jsonify({"error": "person already exists"}), 409
 
         created_at = utc_now()
-        cursor = conn.execute(
-            "INSERT INTO persons (name, created_at) VALUES (?, ?)",
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO persons (name, created_at) VALUES (%s, %s) RETURNING id",
             (name, created_at),
         )
+        result = cursor.fetchone()
         conn.commit()
 
         return (
             jsonify(
                 {
-                    "id": cursor.lastrowid,
+                    "id": result["id"],
                     "name": name,
                     "created_at": created_at,
                 }
@@ -547,9 +629,11 @@ def enroll_person() -> tuple:
         person, was_created = get_or_create_person(conn, name)
     finally:
         conn.close()
+    
+    person_id = person["id"] if isinstance(person, dict) else person[0]
+    person_name = person["name"] if isinstance(person, dict) else person[1]
 
-    person_id = person["id"]
-    person_name = person["name"]
+
     saved_paths, skipped_files = save_person_photos(person_name, photo_files)
     total_photos = count_person_photos(person_name)
 
@@ -557,7 +641,8 @@ def enroll_person() -> tuple:
         if was_created and total_photos == 0:
             conn = get_db_connection()
             try:
-                conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM persons WHERE id = %s", (person_id,))
                 conn.commit()
             finally:
                 conn.close()
@@ -613,11 +698,13 @@ def enroll_person() -> tuple:
 def delete_person(person_id: int) -> tuple:
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT name FROM persons WHERE id = ?", (person_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM persons WHERE id = %s", (person_id,))
+        row = cursor.fetchone()
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
-        cursor = conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+        cursor.execute("DELETE FROM persons WHERE id = %s", (person_id,))
         conn.commit()
         if cursor.rowcount == 0:
             return jsonify({"error": "person not found"}), 404
@@ -634,7 +721,9 @@ def delete_person(person_id: int) -> tuple:
 def list_person_photos(person_id: int) -> tuple:
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT name FROM persons WHERE id = ?", (person_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM persons WHERE id = %s", (person_id,))
+        row = cursor.fetchone()
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
@@ -654,7 +743,9 @@ def list_person_photos(person_id: int) -> tuple:
 def delete_person_photo(person_id: int, photo_name: str) -> tuple:
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT name FROM persons WHERE id = ?", (person_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM persons WHERE id = %s", (person_id,))
+        row = cursor.fetchone()
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
@@ -672,7 +763,9 @@ def serve_person_photo(person_id: int, photo_name: str) -> tuple:
     from flask import send_file
     conn = get_db_connection()
     try:
-        row = conn.execute("SELECT name FROM persons WHERE id = ?", (person_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM persons WHERE id = %s", (person_id,))
+        row = cursor.fetchone()
         if not row:
             return jsonify({"error": "person not found"}), 404
         person_name = row["name"]
@@ -694,10 +787,12 @@ def upload_person_photo(person_id: int) -> tuple:
 
     conn = get_db_connection()
     try:
-        person = conn.execute(
-            "SELECT id, name FROM persons WHERE id = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name FROM persons WHERE id = %s",
             (person_id,),
-        ).fetchone()
+        )
+        person = cursor.fetchone()
     finally:
         conn.close()
 
@@ -750,10 +845,12 @@ def recognize() -> tuple:
 
     conn = get_db_connection()
     try:
-        person = conn.execute(
-            "SELECT id, name FROM persons WHERE LOWER(name) = LOWER(?)",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name FROM persons WHERE LOWER(name) = LOWER(%s)",
             (raw_name,),
-        ).fetchone()
+        )
+        person = cursor.fetchone()
 
         if person:
             resolved_name = person["name"]
@@ -767,19 +864,20 @@ def recognize() -> tuple:
             message = "Welcome Guest to Computer Science Department"
 
         detected_at = utc_now()
-        cursor = conn.execute(
+        cursor.execute(
             """
             INSERT INTO detections (person_id, raw_name, is_known, confidence, message, detected_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (person_id, resolved_name, is_known, confidence, message, detected_at),
         )
+        result = cursor.fetchone()
         conn.commit()
 
         return (
             jsonify(
                 {
-                    "id": cursor.lastrowid,
+                    "id": result["id"],
                     "name": resolved_name,
                     "is_known": bool(is_known),
                     "welcomeMessage": message,
@@ -860,10 +958,12 @@ def identify_photo() -> tuple:
             candidate_name = best_person_name or known_names[best_match_index]
             conn = get_db_connection()
             try:
-                person = conn.execute(
-                    "SELECT id, name FROM persons WHERE LOWER(name) = LOWER(?)",
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, name FROM persons WHERE LOWER(name) = LOWER(%s)",
                     (candidate_name,),
-                ).fetchone()
+                )
+                person = cursor.fetchone()
             finally:
                 conn.close()
 
@@ -901,14 +1001,16 @@ def identify_photo() -> tuple:
     detected_at = utc_now()
     conn = get_db_connection()
     try:
-        latest_row = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT id, person_id, raw_name, is_known, confidence, message, detected_at
             FROM detections
             ORDER BY id DESC
             LIMIT 1
             """
-        ).fetchone()
+        )
+        latest_row = cursor.fetchone()
         if latest_row:
             latest_time = datetime.fromisoformat(latest_row["detected_at"])
             current_time = datetime.fromisoformat(detected_at)
@@ -931,13 +1033,14 @@ def identify_photo() -> tuple:
                     200,
                 )
 
-        cursor = conn.execute(
+        cursor.execute(
             """
             INSERT INTO detections (person_id, raw_name, is_known, confidence, message, detected_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (person_id, resolved_name, is_known, confidence, message, detected_at),
         )
+        result = cursor.fetchone()
         conn.commit()
     finally:
         conn.close()
@@ -946,7 +1049,7 @@ def identify_photo() -> tuple:
         jsonify(
             {
                 "state": "identified",
-                "id": cursor.lastrowid,
+                "id": result["id"],
                 "name": resolved_name,
                 "is_known": bool(is_known),
                 "confidence": round(confidence, 4),
@@ -962,14 +1065,16 @@ def identify_photo() -> tuple:
 def latest_status() -> tuple:
     conn = get_db_connection()
     try:
-        row = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT id, person_id, raw_name, is_known, confidence, message, detected_at
             FROM detections
             ORDER BY id DESC
             LIMIT 1
             """
-        ).fetchone()
+        )
+        row = cursor.fetchone()
 
         if not row:
             return (
@@ -996,15 +1101,17 @@ def logs() -> tuple:
 
     conn = get_db_connection()
     try:
-        rows = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT id, person_id, raw_name, is_known, confidence, message, detected_at
             FROM detections
             ORDER BY id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
 
         return jsonify([detection_as_dict(row) for row in rows]), 200
     finally:
@@ -1015,13 +1122,15 @@ def logs() -> tuple:
 def list_users() -> tuple:
     conn = get_db_connection()
     try:
-        rows = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT id, name, email, phone, department, created_at, updated_at
             FROM users
             ORDER BY id DESC
             """
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
         return jsonify([user_as_dict(row) for row in rows]), 200
     finally:
         conn.close()
@@ -1041,24 +1150,18 @@ def create_user() -> tuple:
     now = utc_now()
     conn = get_db_connection()
     try:
-        cursor = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             INSERT INTO users (name, email, phone, department, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, name, email, phone, department, created_at, updated_at
             """,
             (name, email, phone, department, now, now),
         )
+        row = cursor.fetchone()
         conn.commit()
-        row = conn.execute(
-            """
-            SELECT id, name, email, phone, department, created_at, updated_at
-            FROM users
-            WHERE id = ?
-            """,
-            (cursor.lastrowid,),
-        ).fetchone()
         return jsonify(user_as_dict(row)), 201
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         return jsonify({"error": "email already exists"}), 409
     finally:
         conn.close()
@@ -1068,14 +1171,16 @@ def create_user() -> tuple:
 def get_user(user_id: int) -> tuple:
     conn = get_db_connection()
     try:
-        row = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT id, name, email, phone, department, created_at, updated_at
             FROM users
-            WHERE id = ?
+            WHERE id = %s
             """,
             (user_id,),
-        ).fetchone()
+        )
+        row = cursor.fetchone()
         if not row:
             return jsonify({"error": "user not found"}), 404
         return jsonify(user_as_dict(row)), 200
@@ -1121,8 +1226,10 @@ def update_user(user_id: int) -> tuple:
 
     conn = get_db_connection()
     try:
-        cursor = conn.execute(
-            f"UPDATE users SET {', '.join(updates)} WHERE id = ?",
+        cursor = conn.cursor()
+        update_clause = ', '.join(updates)
+        cursor.execute(
+            f"UPDATE users SET {update_clause} WHERE id = %s",
             tuple(values),
         )
         if cursor.rowcount == 0:
@@ -1130,16 +1237,17 @@ def update_user(user_id: int) -> tuple:
             return jsonify({"error": "user not found"}), 404
         conn.commit()
 
-        row = conn.execute(
+        cursor.execute(
             """
             SELECT id, name, email, phone, department, created_at, updated_at
             FROM users
-            WHERE id = ?
+            WHERE id = %s
             """,
             (user_id,),
-        ).fetchone()
+        )
+        row = cursor.fetchone()
         return jsonify(user_as_dict(row)), 200
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         return jsonify({"error": "email already exists"}), 409
     finally:
         conn.close()
@@ -1149,9 +1257,10 @@ def update_user(user_id: int) -> tuple:
 def delete_user(user_id: int) -> tuple:
     conn = get_db_connection()
     try:
-        conn.execute("DELETE FROM user_preferences WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM user_interactions WHERE user_id = ?", (user_id,))
-        cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM user_preferences WHERE user_id = %s", (user_id,))
+        cursor.execute("DELETE FROM user_interactions WHERE user_id = %s", (user_id,))
+        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
         if cursor.rowcount == 0:
             return jsonify({"error": "user not found"}), 404
@@ -1164,18 +1273,21 @@ def delete_user(user_id: int) -> tuple:
 def get_user_preferences(user_id: int) -> tuple:
     conn = get_db_connection()
     try:
-        user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
         if not user:
             return jsonify({"error": "user not found"}), 404
 
-        row = conn.execute(
+        cursor.execute(
             """
             SELECT id, user_id, preferred_tone, language, updated_at
             FROM user_preferences
-            WHERE user_id = ?
+            WHERE user_id = %s
             """,
             (user_id,),
-        ).fetchone()
+        )
+        row = cursor.fetchone()
         if not row:
             return jsonify({"user_id": user_id, "preferred_tone": None, "language": "en"}), 200
         return jsonify(user_preference_as_dict(row)), 200
@@ -1192,41 +1304,45 @@ def upsert_user_preferences(user_id: int) -> tuple:
 
     conn = get_db_connection()
     try:
-        user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
         if not user:
             return jsonify({"error": "user not found"}), 404
 
-        existing = conn.execute(
-            "SELECT id FROM user_preferences WHERE user_id = ?",
+        cursor.execute(
+            "SELECT id FROM user_preferences WHERE user_id = %s",
             (user_id,),
-        ).fetchone()
+        )
+        existing = cursor.fetchone()
         if existing:
-            conn.execute(
+            cursor.execute(
                 """
                 UPDATE user_preferences
-                SET preferred_tone = ?, language = ?, updated_at = ?
-                WHERE user_id = ?
+                SET preferred_tone = %s, language = %s, updated_at = %s
+                WHERE user_id = %s
                 """,
                 (preferred_tone, language, updated_at, user_id),
             )
         else:
-            conn.execute(
+            cursor.execute(
                 """
                 INSERT INTO user_preferences (user_id, preferred_tone, language, updated_at)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
                 """,
                 (user_id, preferred_tone, language, updated_at),
             )
         conn.commit()
 
-        row = conn.execute(
+        cursor.execute(
             """
             SELECT id, user_id, preferred_tone, language, updated_at
             FROM user_preferences
-            WHERE user_id = ?
+            WHERE user_id = %s
             """,
             (user_id,),
-        ).fetchone()
+        )
+        row = cursor.fetchone()
         return jsonify(user_preference_as_dict(row)), 200
     finally:
         conn.close()
@@ -1239,20 +1355,23 @@ def list_user_interactions(user_id: int) -> tuple:
 
     conn = get_db_connection()
     try:
-        user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
         if not user:
             return jsonify({"error": "user not found"}), 404
 
-        rows = conn.execute(
+        cursor.execute(
             """
             SELECT id, user_id, input_text, response_text, confidence, created_at
             FROM user_interactions
-            WHERE user_id = ?
+            WHERE user_id = %s
             ORDER BY id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (user_id, limit),
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
         return jsonify([user_interaction_as_dict(row) for row in rows]), 200
     finally:
         conn.close()
@@ -1267,27 +1386,22 @@ def create_user_interaction(user_id: int) -> tuple:
 
     conn = get_db_connection()
     try:
-        user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
         if not user:
             return jsonify({"error": "user not found"}), 404
 
         created_at = utc_now()
-        cursor = conn.execute(
+        cursor.execute(
             """
             INSERT INTO user_interactions (user_id, input_text, response_text, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id, user_id, input_text, response_text, confidence, created_at
             """,
             (user_id, input_text, response_text, confidence, created_at),
         )
+        row = cursor.fetchone()
         conn.commit()
-        row = conn.execute(
-            """
-            SELECT id, user_id, input_text, response_text, confidence, created_at
-            FROM user_interactions
-            WHERE id = ?
-            """,
-            (cursor.lastrowid,),
-        ).fetchone()
         return jsonify(user_interaction_as_dict(row)), 201
     finally:
         conn.close()
