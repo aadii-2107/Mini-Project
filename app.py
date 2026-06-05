@@ -103,9 +103,9 @@ maybe_migrate_persistent_data()
 
 
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.cursor_factory = RealDictCursor
-    return conn
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set")
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
 def utc_now() -> str:
@@ -549,6 +549,118 @@ def admin_storage_info() -> tuple:
         info["connection_error"] = str(e)
 
     return jsonify(info), 200
+
+
+@app.route("/api/admin/restore-faces", methods=["POST"])
+@login_required
+def admin_restore_faces() -> tuple:
+    mode = str(request.form.get("mode", "merge")).strip().lower()
+    if mode not in {"merge", "replace"}:
+        return jsonify({"error": "mode must be merge or replace"}), 400
+
+    faces_zip = request.files.get("faces_zip")
+    if not faces_zip:
+        return jsonify({"error": "faces_zip file is required"}), 400
+
+    tmp_zip_handle = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp_zip_path = Path(tmp_zip_handle.name)
+    tmp_zip_handle.close()
+
+    tmp_extract_dir = Path(tempfile.mkdtemp(prefix="faces-restore-"))
+
+    def cleanup_paths():
+        try:
+            tmp_zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(tmp_extract_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    try:
+        faces_zip.save(tmp_zip_path)
+
+        def safe_member_path(member: str) -> Path | None:
+            name = str(member or "").replace("\\", "/").lstrip("/")
+            if not name or name.endswith("/"):
+                return None
+            parts = [p for p in name.split("/") if p not in {"", "."}]
+            if any(p == ".." for p in parts):
+                raise ValueError("unsafe zip path")
+            return Path(*parts)
+
+        with zipfile.ZipFile(tmp_zip_path, "r") as archive:
+            for member in archive.namelist():
+                rel = safe_member_path(member)
+                if rel is None:
+                    continue
+                target_path = tmp_extract_dir / rel
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as src, open(target_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+        faces_root = tmp_extract_dir / "known_faces"
+        if not faces_root.exists():
+            matches = [p for p in tmp_extract_dir.rglob("known_faces") if p.is_dir()]
+            if matches:
+                faces_root = matches[0]
+            else:
+                faces_root = tmp_extract_dir
+
+        if not faces_root.exists() or not faces_root.is_dir():
+            return jsonify({"error": "known_faces directory not found in zip"}), 400
+
+        KNOWN_FACES_DIR.mkdir(parents=True, exist_ok=True)
+
+        if mode == "replace" and KNOWN_FACES_DIR.exists():
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            backup_dir = KNOWN_FACES_DIR.parent / f"known_faces.bak-{timestamp}"
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            if KNOWN_FACES_DIR.exists():
+                shutil.move(str(KNOWN_FACES_DIR), str(backup_dir))
+            KNOWN_FACES_DIR.mkdir(parents=True, exist_ok=True)
+
+        copied = 0
+        skipped = 0
+        for file_path in faces_root.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if file_path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+                skipped += 1
+                continue
+
+            try:
+                rel = file_path.relative_to(faces_root)
+            except ValueError:
+                skipped += 1
+                continue
+
+            if len(rel.parts) < 2:
+                skipped += 1
+                continue
+
+            dest_path = KNOWN_FACES_DIR / rel
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            if dest_path.exists() and mode == "merge":
+                skipped += 1
+                continue
+            shutil.copy2(file_path, dest_path)
+            copied += 1
+
+        global _known_faces_signature_cache
+        _known_faces_signature_cache = None
+
+        return jsonify({"restored": True, "mode": mode, "copied": copied, "skipped": skipped}), 200
+    except ValueError as e:
+        cleanup_paths()
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        cleanup_paths()
+        return jsonify({"error": "restore failed"}), 500
+    finally:
+        cleanup_paths()
 
 
 @app.route("/api/persons", methods=["GET"])
