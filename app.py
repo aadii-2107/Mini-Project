@@ -547,6 +547,8 @@ def admin_backup() -> tuple:
 def admin_storage_info() -> tuple:
     info: dict = {
         "database_url_set": bool(DATABASE_URL),
+        "env_DATA_DIR": os.getenv("DATA_DIR"),
+        "data_dir": str(DATA_DIR),
         "known_faces_dir": str(KNOWN_FACES_DIR),
         "known_faces_exists": KNOWN_FACES_DIR.exists(),
         "face_engine_ready": face_engine_ready(),
